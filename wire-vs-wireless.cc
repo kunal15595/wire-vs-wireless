@@ -11,6 +11,8 @@
 #include "ns3/applications-module.h"
 #include "ns3/error-model.h"
 #include "ns3/tcp-header.h"
+#include "ns3/csma-module.h"
+
 #include "ns3/udp-header.h"
 #include "ns3/enum.h"
 #include "ns3/event-id.h"
@@ -236,14 +238,22 @@ int main (int argc, char *argv[])
 
 	Ptr<SubscriberStationNetDevice>* ss = new Ptr<SubscriberStationNetDevice>[nbSS];
 
-	for (int i = 0; i < nbSS; i++){
-		ss[i] = ssDevs.Get (i)->GetObject<SubscriberStationNetDevice> ();
-		ss[i]->SetModulationType (WimaxPhy::MODULATION_TYPE_QAM16_12);
-	}
+	// source subcriber
+	ss[0] = ssDevs.Get (0)->GetObject<SubscriberStationNetDevice> ();
+	ss[0]->SetModulationType (WimaxPhy::MODULATION_TYPE_QAM16_12);
+
+	// destination subscriber
+	ss[1] = ssDevs.Get (1)->GetObject<SubscriberStationNetDevice> ();
+	ss[1]->SetModulationType (WimaxPhy::MODULATION_TYPE_QAM16_12);
 
 	Ptr<BaseStationNetDevice>* bs = new Ptr<BaseStationNetDevice>[2];
+
+	// source base station
 	bs[0] = bsDevs.Get (0)->GetObject<BaseStationNetDevice> ();
+
+	// destination base station
 	bs[1] = bsDevs.Get (1)->GetObject<BaseStationNetDevice> ();
+
 	
 	mobility.Install (bsNodes);
 	mobility.Install (ssNodes);
@@ -251,44 +261,50 @@ int main (int argc, char *argv[])
 	InternetStackHelper stack_wimax;
 	stack_wimax.Install (bsNodes);
 	stack_wimax.Install (ssNodes);
+	
+	
+	PointToPointHelper base_base_link;
+	base_base_link.SetDeviceAttribute ("DataRate", StringValue ("10Mbps"));
+	base_base_link.SetChannelAttribute ("Delay", StringValue ("100ms"));
+	// base_base_link.SetDeviceAttribute ("ReceiveErrorModel", PointerValue (&error_model));
 
+	NetDeviceContainer base_devs;
+	base_devs = base_base_link.Install (bsNodes.Get (0), bsNodes.Get (1));
+	
+	Ipv4InterfaceContainer interfaces = address_wimax.Assign (base_devs);
+
+	address_wimax.SetBase ("11.1.1.0", "255.255.255.0");
+	Ipv4InterfaceContainer base_interfaces = address_wimax.Assign (base_devs);
 	
 	address_wimax.SetBase ("10.1.1.0", "255.255.255.0");
 	Ipv4InterfaceContainer SSinterfaces = address_wimax.Assign (ssDevs);
 	Ipv4InterfaceContainer BSinterface = address_wimax.Assign (bsDevs);
 
-
 	if (verbose){
 		wimax.EnableLogComponents ();  // Turn on all wimax logging
 	}
 	/*------------------------------*/
-	UdpServerHelper* udpServer = new UdpServerHelper[1];
-	ApplicationContainer* serverApps = new ApplicationContainer[1];
+	UdpServerHelper udpServer;
+	ApplicationContainer serverApps;
 	
-	UdpClientHelper* udpClient = new UdpClientHelper[1];
-	ApplicationContainer* clientApps = new ApplicationContainer[1];
+	UdpClientHelper udpClient;
+	ApplicationContainer clientApps;
 
-	
-	// set server port to 100+(i*10)
-	udpServer[0] = UdpServerHelper (100);
+	udpServer = UdpServerHelper (100);
 
-	serverApps[0] = udpServer[0].Install (ssNodes.Get (0));
-	serverApps[0].Start (Seconds (0.1));
-	serverApps[0].Stop (Seconds (duration_wimax));
+	serverApps = udpServer.Install (ssNodes.Get (0));
+	serverApps.Start (Seconds (0.1));
+	serverApps.Stop (Seconds (duration_wimax));
 
-	udpClient[0] = UdpClientHelper (SSinterfaces.GetAddress (0), 100);
-	udpClient[0].SetAttribute ("MaxPackets", UintegerValue (1200));
-	udpClient[0].SetAttribute ("Interval", TimeValue (Seconds (0.12)));
-	udpClient[0].SetAttribute ("PacketSize", UintegerValue (800));
+	udpClient = UdpClientHelper (SSinterfaces.GetAddress (0), 100);
+	udpClient.SetAttribute ("MaxPackets", UintegerValue (1200));
+	udpClient.SetAttribute ("Interval", TimeValue (Seconds (0.12)));
+	udpClient.SetAttribute ("PacketSize", UintegerValue (800));
 
-	clientApps[0] = udpClient[0].Install (ssNodes.Get (1));
-	clientApps[0].Start (Seconds (0.1));
-	clientApps[0].Stop (Seconds (duration_wimax));
+	clientApps = udpClient.Install (ssNodes.Get (1));
+	clientApps.Start (Seconds (0.1));
+	clientApps.Stop (Seconds (duration_wimax));
 
-	cout << "Base Src : " << BSinterface.GetAddress(0) << endl;
-	cout << "Base Dest : " << BSinterface.GetAddress(1) << endl;
-	cout << "Subs Src : " << SSinterfaces.GetAddress(0) << endl;
-	cout << "Subs Dest : " << SSinterfaces.GetAddress(1) << endl;
 	
 	/*
 		IpcsClassifierRecord (Ipv4Address srcAddress, Ipv4Mask srcMask, Ipv4Address dstAddress, 
@@ -299,37 +315,38 @@ int main (int argc, char *argv[])
 
 	// client
 	// capture traffic from all nodes
-	IpcsClassifierRecord DlClassifierBe (BSinterface.GetAddress (1),
+	IpcsClassifierRecord DlClassifierBe (BSinterface.GetAddress (0),
 										Ipv4Mask ("255.255.255.255"),
 										SSinterfaces.GetAddress (0),
 										Ipv4Mask ("255.255.255.255"),
 										0,
-										65000,
+                                        65000,
 										100,
 										100,
 										17,
 										1);
 	ServiceFlow DlServiceFlowBe = wimax.CreateServiceFlow (ServiceFlow::SF_DIRECTION_DOWN,
-	                              ServiceFlow::SF_TYPE_BE,
+	                              ServiceFlow::SF_TYPE_RTPS,
 	                              DlClassifierBe);
-	ss[1]->AddServiceFlow (DlServiceFlowBe);
+	ss[0]->AddServiceFlow (DlServiceFlowBe);
+
 
 	// server
 	// deliver traffic to all nodes
 	IpcsClassifierRecord ulClassifierBe (SSinterfaces.GetAddress (1),
 										Ipv4Mask ("255.255.255.255"),
-										BSinterface.GetAddress (0),
+										BSinterface.GetAddress (1),
 										Ipv4Mask ("255.255.255.255"),
 										0,
-										65000,
+                                        65000,
 										100,
 										100,
 										17,
 										1);
 	ServiceFlow ulServiceFlowBe = wimax.CreateServiceFlow (ServiceFlow::SF_DIRECTION_UP,
-	                              ServiceFlow::SF_TYPE_BE,
+	                              ServiceFlow::SF_TYPE_RTPS,
 	                              ulClassifierBe);
-	ss[0]->AddServiceFlow (ulServiceFlowBe);
+	ss[1]->AddServiceFlow (ulServiceFlowBe);
 
 
 #endif
@@ -343,6 +360,8 @@ int main (int argc, char *argv[])
 	                               "LayoutType", StringValue ("RowFirst"));
 
 	mobility.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
+
+	Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue (TcpReno::GetTypeId ()));
 
 #ifdef __WIRED__
 
@@ -372,8 +391,7 @@ int main (int argc, char *argv[])
 	float start_time = 0.1;
 	float stop_time = start_time + duration_wired;
 
-	Config::SetDefault ("ns3::TcpL4Protocol::SocketType", TypeIdValue (TcpReno::GetTypeId ()));
-
+	
 	// Create gateways, sources, and sinks
 	NodeContainer gateways;
 	gateways.Create (2);
@@ -541,11 +559,11 @@ int main (int argc, char *argv[])
 	mobility.Install(ssNodes);
 	mobility.Install(bsNodes);
 
-	for (int i = 0; i < nbSS; ++i){
-		AnimationInterface::SetConstantPosition(ssNodes.Get(i), 100, 50*i);
-	}
-	AnimationInterface::SetConstantPosition(bsNodes.Get(0), 40, 70);
-	AnimationInterface::SetConstantPosition(bsNodes.Get(1), 40, 80);
+	AnimationInterface::SetConstantPosition(ssNodes.Get(0), 10, 10);
+	AnimationInterface::SetConstantPosition(ssNodes.Get(1), 10, 50);
+	
+	AnimationInterface::SetConstantPosition(bsNodes.Get(0), 20, 15);
+	AnimationInterface::SetConstantPosition(bsNodes.Get(1), 20, 45);
 	
 	
 #endif
@@ -554,10 +572,6 @@ int main (int argc, char *argv[])
 
 #ifdef __WIRELESS__
 
-	delete[] clientApps;
-	delete[] udpClient;
-	delete[] serverApps;
-	delete[] udpServer;
 	for (int i = 0; i < nbSS; i++){
 		ss[i] = 0;
 	}
